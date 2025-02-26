@@ -1,56 +1,85 @@
 import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
+import fetch from 'node-fetch';
 
 dotenv.config();
 
-const JWT_SECRET = process.env.JWT_SECRET || 'default_secret';
 const ALLOWED_USERS = process.env.ALLOWED_USERS
   ? process.env.ALLOWED_USERS.split(',')
   : [];
 
-// Расширяем тип Request, чтобы использовать req.user
-export const verifyToken = (
-  req: Request,
-  res: Response,
-  next: NextFunction
-) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) {
-    return res.status(401).json({ error: 'Токен не предоставлен' });
-  }
-
-  // Ожидаем формат "Bearer <token>"
-  const token = authHeader.split(' ')[1];
-  if (!token) {
-    return res.status(401).json({ error: 'Неверный формат токена' });
-  }
-
+// Функция для проверки токена через API Яндекса
+const validateYandexToken = async (token: string) => {
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    // @ts-expect-error: добавляем поле user в Request
-    req.user = decoded;
-    next();
+    const response = await fetch('https://login.yandex.ru/info', {
+      method: 'GET',
+      headers: {
+        Authorization: `OAuth ${token}`,
+      },
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    return await response.json();
   } catch (error) {
-    return res.status(401).json({ error: 'Неверный или просроченный токен' });
+    console.error('Ошибка проверки токена:', error);
+    return null;
   }
 };
 
+// Middleware для проверки токена
+export const verifyToken = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader) {
+      res.status(401).json({ error: 'Токен не предоставлен' });
+      return;
+    }
+
+    const token = authHeader.split(' ')[1];
+    if (!token) {
+      res.status(401).json({ error: 'Неверный формат токена' });
+      return;
+    }
+
+    const userData = await validateYandexToken(token);
+    if (!userData) {
+      res.status(401).json({ error: 'Неверный или просроченный токен' });
+      return;
+    }
+
+    req.user = userData; // @ts-ignore можно убрать, если расширить Request
+    await next(); // Дождёмся выполнения next(), чтобы TypeScript не жаловался
+  } catch (error) {
+    console.error('Ошибка верификации токена:', error);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+};
+
+// Middleware для проверки разрешённых пользователей
 export const checkAllowedUser = (
   req: Request,
   res: Response,
   next: NextFunction
-) => {
-  // @ts-expect-error: ожидаем, что req.user содержит email
+): void => {
   const user = req.user;
-  if (!user || !user.email) {
-    return res.status(403).json({ error: 'Доступ запрещён' });
+  if (!user || !user.default_email) {
+    res.status(403).json({ error: 'Доступ запрещён' });
+    return;
   }
 
-  if (!ALLOWED_USERS.includes(user.email)) {
-    return res
+  if (!ALLOWED_USERS.includes(user.default_email)) {
+    res
       .status(403)
       .json({ error: 'У вас нет прав для выполнения данного действия' });
+    return;
   }
 
   next();

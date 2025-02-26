@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import postsRouter from './routes/posts';
+import express from 'express';
 
 dotenv.config();
 
