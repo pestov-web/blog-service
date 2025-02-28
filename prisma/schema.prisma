@@ -8,14 +8,44 @@ generator client {
 }
 
 model Post {
-  id            String   @id @default(uuid())
-  title         String
-  description   String
-  tgDescription String?
-  image         String?
-  content       String?
-  published     Boolean  @default(false)
-  authorId      String? // идентификатор автора (можно получать из JWT)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id             String   @id @default(uuid())
+  title          String
+  description    String
+  tgDescription  String?
+  heroImage      String? // Большая картинка (Hero)
+  thumbnailImage String? // Маленькая квадратная картинка
+  content        String? // Markdown-контент
+  published      Boolean  @default(false)
+  authorId       String? // Идентификатор автора (можно получать из JWT)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tags      Tag[] // Отношение к тегам
+  spiciness Int? // Уровень остроты (например, 1-10)
+  type      PostType // ENUM: ARTICLE, RECIPE
+
+  comments Comment[]
+}
+
+enum PostType {
+  ARTICLE // Обычная статья
+  RECIPE // Рецепт
+}
+
+model Comment {
+  id        String   @id @default(uuid())
+  postId    String
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  authorId  String?
+  content   String
+  createdAt DateTime @default(now())
+}
+
+model Tag {
+  id       String  @id @default(uuid())
+  nameRu   String // Название тега на русском
+  nameEn   String // Название тега на английском
+  pepperId String? // Если тег соответствует перцу, то ID перца из базы перцев
+
+  posts Post[] // Связь многие ко многим с постами
 }
