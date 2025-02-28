@@ -1,86 +1,98 @@
 import { Request, Response, NextFunction } from 'express';
 import dotenv from 'dotenv';
 import fetch from 'node-fetch';
+import Redis from 'ioredis';
 
 dotenv.config();
+const redis = new Redis();
 
-const ALLOWED_USERS = process.env.ALLOWED_USERS
-  ? process.env.ALLOWED_USERS.split(',')
-  : [];
+interface ProviderConfig {
+  name: string;
+  apiUrl: string;
+  headerName: string;
+}
 
-// Функция для проверки токена через API Яндекса
-const validateYandexToken = async (token: string) => {
+const PROVIDERS: { [key: string]: ProviderConfig } = {
+  yandex: {
+    name: 'yandex',
+    apiUrl: 'https://login.yandex.ru/info',
+    headerName: 'OAuth',
+  },
+  github: {
+    name: 'github',
+    apiUrl: 'https://api.github.com/user',
+    headerName: 'token',
+  },
+};
+
+const validateToken = async (provider: string, token: string) => {
   try {
-    const response = await fetch('https://login.yandex.ru/info', {
+    const cachedUser = await redis.get(`${provider}_token:${token}`);
+    if (cachedUser) {
+      console.log(`Используем кэшированные данные (${provider})`);
+      return JSON.parse(cachedUser);
+    }
+
+    const providerConfig = PROVIDERS[provider];
+    if (!providerConfig) return null;
+
+    const response = await fetch(providerConfig.apiUrl, {
       method: 'GET',
       headers: {
-        Authorization: `OAuth ${token}`,
+        Authorization: `${providerConfig.headerName} ${token}`,
+        Accept: 'application/json',
       },
     });
 
-    if (!response.ok) {
-      return null;
-    }
+    if (!response.ok) return null;
+    const userData = await response.json();
 
-    return await response.json();
+    await redis.setex(
+      `${provider}_token:${token}`,
+      600,
+      JSON.stringify(userData)
+    );
+
+    return userData;
   } catch (error) {
-    console.error('Ошибка проверки токена:', error);
+    console.error(`Ошибка валидации токена (${provider}):`, error);
     return null;
   }
 };
 
-// Middleware для проверки токена
 export const verifyToken = async (
   req: Request,
   res: Response,
   next: NextFunction
-): Promise<void> => {
+) => {
   try {
     const authHeader = req.headers.authorization;
+    const provider = req.headers['x-auth-provider'] as string; // Например, 'yandex' или 'github'
 
-    if (!authHeader) {
-      res.status(401).json({ error: 'Токен не предоставлен' });
-      return;
+    if (!authHeader || !provider) {
+      return res
+        .status(401)
+        .json({ error: 'Токен или провайдер не предоставлен' });
     }
 
     const token = authHeader.split(' ')[1];
     if (!token) {
-      res.status(401).json({ error: 'Неверный формат токена' });
-      return;
+      return res.status(401).json({ error: 'Неверный формат токена' });
     }
 
-    const userData = await validateYandexToken(token);
+    if (!PROVIDERS[provider]) {
+      return res.status(400).json({ error: 'Неизвестный провайдер' });
+    }
+
+    const userData = await validateToken(provider, token);
     if (!userData) {
-      res.status(401).json({ error: 'Неверный или просроченный токен' });
-      return;
+      return res.status(401).json({ error: 'Неверный или просроченный токен' });
     }
 
-    req.user = userData; // @ts-ignore можно убрать, если расширить Request
-    await next(); // Дождёмся выполнения next(), чтобы TypeScript не жаловался
+    req.user = { provider, ...userData };
+    next();
   } catch (error) {
     console.error('Ошибка верификации токена:', error);
     res.status(500).json({ error: 'Ошибка сервера' });
   }
-};
-
-// Middleware для проверки разрешённых пользователей
-export const checkAllowedUser = (
-  req: Request,
-  res: Response,
-  next: NextFunction
-): void => {
-  const user = req.user;
-  if (!user || !user.default_email) {
-    res.status(403).json({ error: 'Доступ запрещён' });
-    return;
-  }
-
-  if (!ALLOWED_USERS.includes(user.default_email)) {
-    res
-      .status(403)
-      .json({ error: 'У вас нет прав для выполнения данного действия' });
-    return;
-  }
-
-  next();
 };
